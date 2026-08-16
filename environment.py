@@ -606,6 +606,15 @@ class GUI:
             self.render_text(f'{a.total_score:d}', 890, y_base + 50 * i, (64, 64, 64),
                              valign='center', halign='right', size='big')
 
+        # Live agent decision debug — right sidebar, below scoreboard
+        debug_y = y_base + 50 * len(agents) + 25
+        for agent in self.world.agents:
+            debug_path = Path(f'agent_code/{agent.code_name}/live_debug.txt')
+            if debug_path.exists():
+                for i, line in enumerate(debug_path.read_text().splitlines()[:14]):
+                    self.render_text(line, 600, debug_y + 10 * i, (180, 255, 180), size='small')
+                break
+
         # End of round info
         if not self.world.running:
             x_center = (s.WIDTH - s.GRID_OFFSET[0] - s.COLS * s.GRID_SIZE) / 2 + s.GRID_OFFSET[0] + s.COLS * s.GRID_SIZE
