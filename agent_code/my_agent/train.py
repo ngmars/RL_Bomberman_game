@@ -43,8 +43,8 @@ def setup_training(self):
     # self.transitions = deque(maxlen=TRANSITION_HISTORY_SIZE)
 
     self.transitions = deque(maxlen=10000)
-    self.alpha = 0.1  # lr
-    self.gamma = 0.99 # discount    
+    self.alpha = 0.05  # lr
+    self.gamma = 0.9 # discount    
     self.episode_reward = 0
     self.metrics_path = "training_metrics.csv"
     # Delete training_metrics.csv before a new run to start fresh.
@@ -83,15 +83,24 @@ def game_events_occurred(self, old_game_state: dict, self_action: str, new_game_
     self.logger.debug(f'Encountered game event(s) {", ".join(map(repr, events))} in step {new_game_state["step"]}')
 
     # # Idea: Add your own events to hand out rewards
-    old_dist = distance_to_nearest_coint(old_game_state)
-    new_dist = distance_to_nearest_coint(new_game_state)
+    # old_dist = distance_to_nearest_coint(old_game_state)
+    # new_dist = distance_to_nearest_coint(new_game_state)
 
-    if old_dist is not None and new_dist is not None:
-        if(new_dist < old_dist):
-            events.append("MOVED_TOWARD_COIN")
-        # elif(new_dist > old_dist):
-        #     events.append("MOVED_AWAY_FROM_COIN")
-
+    # if e.COIN_COLLECTED not in events and old_dist is not None and new_dist is not None:
+    #     if new_dist < old_dist:
+    #         events.append("MOVED_TOWARD_COIN")
+    #     elif new_dist > old_dist:
+    #         events.append("MOVED_AWAY_FROM_COIN")
+    #     # elif(new_dist > old_dist):
+    #     #     events.append("MOVED_AWAY_FROM_COIN")
+    old_features = state_to_features(old_game_state)
+    if old_features is not None:
+        if old_features[:4].max() > 0.5:
+            followed = ACTIONS_TO_IDX[self_action] == int(np.argmax(old_features[:4]))
+            events.append("MOVED_TOWARD_COIN" if followed else "MOVED_AWAY_FROM_COIN")
+        elif old_features[5:9].max() > 0.5:
+            followed = ACTIONS_TO_IDX[self_action] == int(np.argmax(old_features[5:9]))
+            events.append("FOLLOWED_ESCAPE" if followed else "IGNORED_ESCAPE")
     reward = reward_from_events(self, events)
     self.episode_reward += reward  
     done = False
@@ -171,6 +180,7 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
 
     train_on_batch(self)
     self.epsilon = max(0.05, self.epsilon * 0.995)
+    self.alpha = max(0.005, self.alpha * 0.997)
     q_stats = log_q_values(self, last_game_state, last_action)
 
     _, game_score, _, _ = last_game_state["self"]
@@ -208,8 +218,11 @@ def reward_from_events(self, events: List[str]) -> int:
         e.INVALID_ACTION: -5,
         e.KILLED_SELF: -50,
         e.SURVIVED_ROUND: 5,
+        e.WAITED: -0.5,
         "MOVED_TOWARD_COIN": 0.1,
         "MOVED_AWAY_FROM_COIN": -0.1,
+        "FOLLOWED_ESCAPE": 1,
+        "IGNORED_ESCAPE": -1,
     }
     reward_sum = 0
     for event in events:

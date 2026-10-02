@@ -12,7 +12,22 @@ ACTIONS = ['UP', 'RIGHT', 'DOWN', 'LEFT', 'WAIT', 'BOMB']
 #Actions to index 
 ACTIONS_TO_IDX = {a: i for i, a in enumerate(ACTIONS)}
 
-N_FEATURES = 11
+N_FEATURES = 10
+DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+
+def blast_timers(field, bombs):
+    """Per tile: steps until a bomb blast hits it (np.inf if no bomb reaches it)."""
+    danger = np.full(field.shape, np.inf)
+    for (bx, by), t in bombs:
+        danger[bx, by] = min(danger[bx, by], t)
+        for dx, dy in DIRS:
+            for k in range(1, s.BOMB_POWER + 1):
+                i, j = bx + dx * k, by + dy * k
+                if field[i, j] == -1:
+                    break
+                danger[i, j] = min(danger[i, j], t)
+    return danger
+
 
 def setup(self):
     """
@@ -85,7 +100,7 @@ def look_for_targets(free_space, start, targets, logger=None):
         # Add unexplored free neighboring tiles to the queue in a random order
         x, y = current
         neighbors = [(x, y) for (x, y) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] if free_space[x, y]]
-        shuffle(neighbors)
+        #shuffle(neighbors)
         for neighbor in neighbors:
             if neighbor not in parent_dict:
                 frontier.append(neighbor)
@@ -93,6 +108,7 @@ def look_for_targets(free_space, start, targets, logger=None):
                 dist_so_far[neighbor] = dist_so_far[current] + 1
     if logger: logger.debug(f'Suitable target found at {best}')
     # Determine the first step towards the best found target tile
+
     current = best
     while True:
         if parent_dict[current] == start: return current
@@ -108,11 +124,12 @@ def get_valid_actions(bomb_history, game_state:dict):
     bomb_xys = [xy for (xy, t) in bombs]
     others = [xy for (n, s, b, xy) in game_state['others']]
     coins = game_state['coins']
-    bomb_map = np.ones(arena.shape) * 5
-    for (xb, yb), t in bombs:
-        for (i, j) in [(xb + h, yb) for h in range(-3, 4)] + [(xb, yb + h) for h in range(-3, 4)]:
-            if (0 < i < bomb_map.shape[0]) and (0 < j < bomb_map.shape[1]):
-                bomb_map[i, j] = min(bomb_map[i, j], t)
+    # bomb_map = np.ones(arena.shape) * 5
+    # for (xb, yb), t in bombs:
+    #     for (i, j) in [(xb + h, yb) for h in range(-3, 4)] + [(xb, yb + h) for h in range(-3, 4)]:
+    #         if (0 < i < bomb_map.shape[0]) and (0 < j < bomb_map.shape[1]):
+    #             bomb_map[i, j] = min(bomb_map[i, j], t)
+    bomb_map = blast_timers(arena, bombs)
 
     directions = [(x,y), (x+1, y), (x-1, y), (x,y+1), (x,y-1)]
     valid_tiles, valid_actions = [],[]
@@ -121,6 +138,7 @@ def get_valid_actions(bomb_history, game_state:dict):
         if( (arena[d] ==0 )and 
             (game_state["explosion_map"][d] < 1) and 
             (bomb_map[d]>0)and 
+            (bomb_map[d] == np.inf or bomb_map[x, y] < np.inf) and
             (not d in others) and 
             (not d in bomb_xys)
            ):
@@ -143,8 +161,10 @@ def _bfs_direction_name(game_state, features):
     _, _, _, (x, y) = game_state['self']
     labels = ['UP', 'RIGHT', 'DOWN', 'LEFT']
     for i, name in enumerate(labels):
-        if features[2 + i] > 0.5:
+        if features[i] > 0.5:
             return name
+        if features[5 + i] > 0.5:
+            return 'ESCAPE ' + name
     return 'none'
 
 
@@ -248,56 +268,94 @@ def state_to_features(game_state: dict) -> np.array:
     coins = game_state["coins"]
     explosion_map = game_state["explosion_map"]
     max_dist = max(s.COLS, s.ROWS)
+    danger = blast_timers(field, game_state["bombs"])
     free_space = (field == 0) & (explosion_map < 1)
-    features = [x/max_dist, y/max_dist]
+    for (_, _, _, other_xy) in game_state["others"]:
+        free_space[other_xy] = False
+    for (bomb_xy, _) in game_state["bombs"]:
+        free_space[bomb_xy] = False
 
+    start = (x, y)
+    in_danger = danger[x, y] < np.inf
 
-    ## find the nearest coin location
-    # if coins: 
-    #     nearest = min(coins, key = lambda c:abs(c[0]-x)+ abs(c[1]-y))
-    #     cx, cy = nearest 
-    #     features += [(cx-x)/max_dist, (cy-y)/max_dist, (abs(cx-x)+ abs(cy-y))/max_dist]
-    # else:
-    #     features += [0.0,0.0,0.0]
-
-    start = (x,y)
-
-    if coins:
-        first_step = look_for_targets(free_space, start, coins)
+    if in_danger:
+        # head for the nearest tile no bomb can reach
+        targets = [tuple(p) for p in np.argwhere(free_space & (danger == np.inf))]
+        first_step = look_for_targets(free_space, start, targets)
     else:
-        first_step  = None
+        # head for the nearest coin without walking through blast zones
+        free_space = free_space & (danger == np.inf)
+        first_step = look_for_targets(free_space, start, coins)
 
-    # Order must match  walkability loop: UP, RIGHT, DOWN, LEFT
-    bfs_features = [0.0, 0.0, 0.0, 0.0]
-
+    # Order: UP, RIGHT, DOWN, LEFT
+    direction = [0.0, 0.0, 0.0, 0.0]
     if first_step == (x, y - 1):
-        bfs_features[0] = 1.0   # UP
+        direction[0] = 1.0
     elif first_step == (x + 1, y):
-        bfs_features[1] = 1.0   # RIGHT
+        direction[1] = 1.0
     elif first_step == (x, y + 1):
-        bfs_features[2] = 1.0   # DOWN
+        direction[2] = 1.0
     elif first_step == (x - 1, y):
-        bfs_features[3] = 1.0   # LEFT
-    # else: all zeros (already on coin, no coins, or stuck)
+        direction[3] = 1.0
+    block = direction + [0.0 if any(direction) else 1.0]
 
-    features.extend(bfs_features)
-    ## check where agent can move
-    ## UP, RIGHT, DOWN, LEFT
-    for dx, dy in ([(0,-1),(1,0),(0,1),(-1,0)]):
-        nx, ny = x+dx, y+dy
-        if (0<= nx < field.shape[0] and 0 <= ny < field.shape[1]):
-            ## if nx,ny is walkable and in the field and is not in the current explosion zone
-            walkable =  field[nx, ny] ==0 and explosion_map[nx,ny]<1
-            if(walkable):
-                features.append(1.0)
-            else:
-                features.append(0.0)
-        else:
-            features.append(0.0)
-
-    ## check if any bombs are left on the field
-    features.append(1.0 if bombs_left else 0.0)
+    # features 0-4: safe (coin direction, none); 5-9: in danger (escape direction, none)
+    features = [0.0] * 5 + block if in_danger else block + [0.0] * 5
     return np.array(features, dtype=np.float32)
+    # free_space = (field == 0) & (explosion_map < 1)
+    # for (_, _, _, other_xy) in game_state["others"]:
+    #     free_space[other_xy] = False
+
+
+    # ## find the nearest coin location
+    # # if coins: 
+    # #     nearest = min(coins, key = lambda c:abs(c[0]-x)+ abs(c[1]-y))
+    # #     cx, cy = nearest 
+    # #     features += [(cx-x)/max_dist, (cy-y)/max_dist, (abs(cx-x)+ abs(cy-y))/max_dist]
+    # # else:
+    # #     features += [0.0,0.0,0.0]
+
+    # start = (x,y)
+
+    # if coins:
+    #     first_step = look_for_targets(free_space, start, coins)
+    # else:
+    #     first_step  = None
+
+    # # Order must match  walkability loop: UP, RIGHT, DOWN, LEFT
+    # bfs_features = [0.0, 0.0, 0.0, 0.0]
+
+    # if first_step == (x, y - 1):
+    #     bfs_features[0] = 1.0   # UP
+    # elif first_step == (x + 1, y):
+    #     bfs_features[1] = 1.0   # RIGHT
+    # elif first_step == (x, y + 1):
+    #     bfs_features[2] = 1.0   # DOWN
+    # elif first_step == (x - 1, y):
+    #     bfs_features[3] = 1.0   # LEFT
+    # # else: all zeros (already on coin, no coins, or stuck)
+
+    # #features.extend(bfs_features)
+    # ## check where agent can move
+    # ## UP, RIGHT, DOWN, LEFT
+    # # for dx, dy in ([(0,-1),(1,0),(0,1),(-1,0)]):
+    # #     nx, ny = x+dx, y+dy
+    # #     if (0<= nx < field.shape[0] and 0 <= ny < field.shape[1]):
+    # #         ## if nx,ny is walkable and in the field and is not in the current explosion zone
+    # #         walkable =  field[nx, ny] ==0 and explosion_map[nx,ny]<1
+    # #         if(walkable):
+    # #             features.append(1.0)
+    # #         else:
+    # #             features.append(0.0)
+    # #     else:
+    # #         features.append(0.0)
+
+    # # ## check if any bombs are left on the field
+    # # features.append(1.0 if bombs_left else 0.0)
+    # # return np.array(features, dtype=np.float32)
+    # features = bfs_features + [0.0 if any(bfs_features) else 1.0]
+    # #features = bfs_features + [1.0]   # 4 BFS one-hots + bias
+    # return np.array(features, dtype=np.float32)
 
     # # For example, you could construct several channels of equal shape, ...   
     # channels = []

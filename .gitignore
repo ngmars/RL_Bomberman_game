@@ -111,3 +111,8 @@ screenshots/*.webm
 
 replays/
 results/.DS_Store
+agent_code/my_agent/my-saved-model.pt
+agent_code/my_agent/training_metrics.csv
+agent_code/my_agent/live_debug.txt
+agent_code/my_agent/logs/
+results/
