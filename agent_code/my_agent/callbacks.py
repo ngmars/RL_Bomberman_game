@@ -16,7 +16,7 @@ N_FEATURES = 10
 DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
 def blast_timers(field, bombs):
-    """Per tile: steps until a bomb blast hits it (np.inf if no bomb reaches it)."""
+    # when a tile will be hit by the bomb, by default np.inf, if no bomb on the tile
     danger = np.full(field.shape, np.inf)
     for (bx, by), t in bombs:
         danger[bx, by] = min(danger[bx, by], t)
